@@ -1,16 +1,23 @@
 #include <Arduino.h>
 #include <Wire.h>
 
+/* * PROJECT: ESP32 PWM Generator (High Precision)
+ * CORE VERSION: 3.3.5 (FlashESP.com / Arduino IDE)
+ */
+
 #define PWM_PIN 13       
 #define LCD_ADDR 0x3F    
 #define PWM_RES 10       
 
-// --- AUTO-DETECT CHIP LIMITS ---
+// Joystick Pins
+const int PIN_UP = 5, PIN_DOWN = 18, PIN_LEFT = 19, PIN_RIGHT = 23, PIN_MID = 25;
+
+// --- Chip Limits ---
 #if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C3)
-  #define MAX_FREQ 78000  // Safe limit for 10-bit on S3/C3
+  #define MAX_FREQ 78000  
   const char* chipName = "ESP32-S3/C3";
 #else
-  #define MAX_FREQ 78125  // Limit for classic ESP32
+  #define MAX_FREQ 78125  
   const char* chipName = "ESP32 Classic";
 #endif
 
@@ -18,10 +25,7 @@
 #define MIN_DUTY 1       
 #define MAX_DUTY 400     
 
-// Joystick Pins
-const int PIN_UP = 5, PIN_DOWN = 18, PIN_LEFT = 19, PIN_RIGHT = 23, PIN_MID = 25;
-
-// Variables
+// --- Variables ---
 uint32_t frequency = MIN_FREQ; 
 uint32_t dutyRaw = MIN_DUTY;       
 bool inMenu = false;
@@ -29,7 +33,7 @@ int menuIndex = 0;
 int editMode = 0;  
 int digitPos = 0;  
 
-// --- LCD Bit-Bang Driver Functions ---
+// --- LCD Bit-Bang Driver ---
 void lcdPulse(uint8_t data) {
   Wire.beginTransmission(LCD_ADDR);
   Wire.write(data | 0x04); Wire.endTransmission();
@@ -55,16 +59,22 @@ void lcdInit() {
   Wire.begin(21, 22);
   delay(100);
   for(int i=0; i<3; i++) { lcdCommand(0x03); delay(5); }
-  lcdCommand(0x02); lcdCommand(0x28); lcdCommand(0x0C); lcdCommand(0x01);
+  lcdCommand(0x02); lcdCommand(0x28); lcdCommand(0x0C); lcdCommand(0x06); lcdCommand(0x01);
   delay(5);
 }
 
 void lcdSetCursor(int col, int row) { lcdCommand((row == 0 ? 0x80 : 0xC0) + col); }
 void lcdPrint(const char* str) { while (*str) lcdWrite(*str++); }
 
+// --- FIXED PWM UPDATE LOGIC ---
 void updatePWM() {
-  ledcAttach(PWM_PIN, frequency, PWM_RES);
+  // Use ledcWriteTone to force a frequency change on the pin's timer
+  ledcWriteTone(PWM_PIN, frequency);
+  
+  // Re-apply duty cycle because ledcWriteTone resets it to 50%
   ledcWrite(PWM_PIN, dutyRaw);
+  
+  Serial.printf("Hardware Updated -> Freq: %u Hz, Duty: %u\n", frequency, dutyRaw);
 }
 
 uint32_t modifyValue(uint32_t val, int pos, int dir, uint32_t minV, uint32_t maxV) {
@@ -90,7 +100,7 @@ void refreshDisplay() {
   } else {
     lcdSetCursor(0, 0);
     if (editMode != 0) {
-      lcdPrint(editMode == 1 ? "SET FREQUENCY" : "SET DUTY");
+      lcdPrint(editMode == 1 ? "EDIT FREQUENCY" : "EDIT DUTY");
       lcdSetCursor(0, 1);
       if (editMode == 1) {
         sprintf(buf, "F: %5u Hz", frequency); lcdPrint(buf);
@@ -111,10 +121,14 @@ void refreshDisplay() {
 }
 
 void setup() {
+  Serial.begin(115200);
   lcdInit();
   pinMode(PIN_UP, INPUT_PULLUP); pinMode(PIN_DOWN, INPUT_PULLUP);
   pinMode(PIN_LEFT, INPUT_PULLUP); pinMode(PIN_RIGHT, INPUT_PULLUP);
   pinMode(PIN_MID, INPUT_PULLUP);
+
+  // Initial attach
+  ledcAttach(PWM_PIN, frequency, PWM_RES);
   updatePWM();
   refreshDisplay();
 }
@@ -132,7 +146,7 @@ void loop() {
         if (menuIndex == 0) inMenu = false;
         else if (menuIndex == 1) { editMode = 1; digitPos = 0; }
         else if (menuIndex == 2) { editMode = 2; digitPos = 0; }
-        else if (menuIndex == 3) { lcdCommand(0x01); lcdPrint(chipName); delay(1000); }
+        else if (menuIndex == 3) { lcdCommand(0x01); lcdPrint("PWM Gen v1.7"); delay(1000); }
       } else editMode = 0;
     }
     changed = true; lastInput = millis();
@@ -151,7 +165,7 @@ void loop() {
   if (digitalRead(PIN_LEFT) == LOW || digitalRead(PIN_RIGHT) == LOW) {
     if (editMode != 0) {
       int dir = (digitalRead(PIN_LEFT) == LOW) ? 1 : -1;
-      int maxDigits = (editMode == 1) ? 4 : 3; // Freq max is 5 digits (78000)
+      int maxDigits = (editMode == 1) ? 4 : 3;
       digitPos = constrain(digitPos + dir, 0, maxDigits);
       changed = true; lastInput = millis();
     }
